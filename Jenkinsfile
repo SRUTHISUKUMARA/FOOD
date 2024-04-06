@@ -1,91 +1,83 @@
-pipeline { agent any
+name: Tests
 
-stages {
-    stage('Planning and Analysis') {
-        steps {
-            echo 'Gathering, analyzing, and documenting project requirements...'
-            // Additional steps for planning and analysis stage can be added here
-           sh 'mkdir -p planning_analysis'
-            sh 'echo "Project Requirements: ..." > planning_analysis/requirements.txt'
-            sh 'echo "Analysis Report: ..." > planning_analysis/analysis_report.txt'
-        }
-    }
-    
-    stage('Infrastructure setup with VS Code') {
-steps {
-    echo 'Setting up infrastructure using Visual Studio Code...'
-    // Additional steps for VS Code infrastructure setup can be added here
+on:
+  push:
+    branches:
+      - master
+      - develop
+      - 3.x
+  pull_request:
 
-    
+jobs:
+  PHPUnitTests:
+#    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 6
+      matrix:
+#        os: [ubuntu-latest, windows-latest]
+        php: ['7.4', '8.0', '8.1']
+        db: ['mysql:5.7', 'mysql:8.0', 'mariadb:10.2', 'mariadb:10.6']
+        include:
+          - db: 'mysql:5.7'
+            dbName: 'MySQL 5.7'
+          - db: 'mysql:8.0'
+            dbName: 'MySQL'
+          - db: 'mariadb:10.2'
+            dbName: 'MariaDB 10.2'
+          - db: 'mariadb:10.6'
+            dbName: 'MariaDB'
+      fail-fast: false
 
-    //  Open VS Code with the infrastructure configuration directory
-    //sh 'code /path/to/infrastructure'
+    services:
+      mysql:
+        image: ${{ matrix.db }}
+        ports:
+          - 3306
 
-    // Example: Manual steps or scripts within VS Code can be executed here
-    echo 'Ensure to review, validate, and apply infrastructure  within VS Code.'
-}
-}
+    name: 'PHPUnit Tests ${{ matrix.php }} / ${{ matrix.dbName }}'
 
-    stage('Development') {
-        steps {
-            echo 'Coding and implementation of the project...'
-            // Additional steps for development stage can be added here
-            dir('backend') {
-                // For Node.js backend
-               sh 'npm install'
-               sh 'npm run lint'
-                sh 'npm test'
-                sh 'zip -r ../backend.zip .'
-            }
-            dir('frontend') {
-                // For frontend HTML, CSS, and JavaScript
-                // Assuming HTML, CSS, and JavaScript files are in the frontend directory
-                sh 'zip -r ../frontend.zip .'
-            }
-        }
-    }
-    
-    stage('Deployment') {
-        steps {
-            echo 'Configuring servers, deploying code, setting up databases, and other deployment tasks...'
-            // Additional steps for deployment stage can be added here
-            sh 'aws s3 cp backend.zip s3://your-bucket-name/'
-            sh 'aws s3 cp frontend.zip s3://your-bucket-name/'
-            sh 'aws lambda update-function-code --function-name your-lambda-function --s3-bucket your-bucket-name --s3-key backend.zip'
-            sh 'aws s3api put-object --bucket your-bucket-name --key frontend.zip --body frontend.zip'
-            sh 'aws lambda create-function --function-name your-lambda-function --runtime nodejs14.x --handler index.handler --role arn:aws:iam::your-account-id:role/your-execution-role --code S3Bucket=your-bucket-name,S3Key=backend.zip'
-            sh 'aws apigateway create-rest-api --name your-api --region your-region'
-            // Additional steps for configuring API Gateway can be added here
-        }
-    }
-    
-    stage('Monitoring and Maintenance') {
-        steps {
-            echo 'Monitoring and maintaining the deployed software...'
-            // Additional steps for monitoring and maintenance stage can be added here
-            sh 'aws cloudwatch put-metric-alarm --alarm-name your-alarm-name --metric-name your-metric --namespace your-namespace --statistic Average --period 300 --threshold 70 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --alarm-actions your-sns-topic-arn'
-        }
-    }
-    
-    stage('Documentation') {
-        steps {
-            echo 'Creating project documentation...'
-            // Additional steps for documentation stage can be added here
-            sh 'mkdir -p documentation'
-            sh 'echo "Project Documentation: ..." > documentation/project_documentation.txt'
-            sh 'echo "User Guide: ..." > documentation/user_guide.txt'
-        }
-    }
-}
+    steps:
+      - name: Checkout changes
+        uses: actions/checkout@v1
 
- post {
-    success {
-        echo 'Pipeline successfully completed!'
-        // Additional actions for successful completion can be added here
-    }
-    failure {
-        echo 'Pipeline failed!'
-        // Additional actions for pipeline failure can be added here
-    }
-}
-}
+      - name: Create MySQL Database
+        run: |
+          sudo systemctl start mysql
+          mysql -u${{ env.DB_USERNAME }} -p${{ env.DB_PASSWORD }} -e 'CREATE DATABASE ${{ env.DB_DATABASE }};' --port ${{ env.DB_PORT }}
+
+      - name: Install PHP
+        uses: shivammathur/setup-php@master
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, intl, gd, xml, sqlite
+
+      - name: Install composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress --no-scripts
+
+      - name: Reset TastyIgniter library
+        run: |
+          git reset --hard HEAD
+          rm -rf ./vendor/tastyigniter/flame
+          wget https://github.com/tastyigniter/flame/archive/master.zip -O ./vendor/tastyigniter/master.zip
+          unzip ./vendor/tastyigniter/master.zip -d ./vendor/tastyigniter
+          mv ./vendor/tastyigniter/flame-master ./vendor/tastyigniter/flame
+          composer dump-autoload
+
+      - name: Run composer post-update scripts
+        run: |
+          php artisan key:generate --force
+          php artisan igniter:install --no-interaction
+          php artisan igniter:util set version
+          php artisan package:discover
+
+      - name: Run PHPUnit Test Suite
+        run: ./vendor/bin/phpunit
+
+    env:
+      DB_PORT: 3306
+      DB_DATABASE: test
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      DB_PREFIX: 'ti_'
+      IGNITER_LOCATION_MODE: multiple
